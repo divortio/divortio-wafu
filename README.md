@@ -1,8 +1,12 @@
 # WAFu - The Durable Object Web Application Firewall
 
 WAFu is a highly configurable, multi-tenant Web Application Firewall (WAF) built entirely on the Cloudflare serverless
-platform. It leverages Workers, Durable Objects with native SQLite storage, and KV to provide a robust, scalable, and
-performant security layer for your applications. By acting as a secure gateway for all incoming traffic, WAFu allows you
+platform. 
+
+WAFu leverages Workers, Durable Objects with native SQLite storage, and KV to provide a robust, scalable, and
+performant security layer for your applications. 
+
+By acting as a secure gateway for all incoming traffic, WAFu allows you
 to enforce complex security policies at the edge, closer to your users, ensuring threats are mitigated before they can
 ever reach your origin servers.
 
@@ -253,3 +257,54 @@ This is the most secure and performant method for worker-to-worker communication
    Binding)" and enter the binding name (e.g., `MY_API_WORKER`).
 
 Your origin worker is now completely inaccessible from the public internet and can only be invoked by your WAFu worker.
+
+# Managing WAFu: The Admin UI
+
+Once WAFu is deployed, all configuration and management is handled through the built-in web admin UI.
+
+### 1. Accessing the Admin Dashboard
+
+The admin UI is served directly from your WAFu worker. To access it, simply navigate to the `/wafu-admin/` path on any
+domain that is routed through your WAFu worker.
+
+* **URL Format:** `https://[your-domain.com]/wafu-admin/`
+* **Example:** If your domain is `www.example.com`, you would access the admin UI
+  at `https://www.example.com/wafu-admin/`.
+
+You will be prompted to log in.
+
+### 2. Logging In
+
+Access to the entire admin dashboard is protected by a single, powerful password: the **`WAFU_CONFIG_SECRET`** you
+configured during deployment.
+
+* Enter this secret value into the login prompt to gain access.
+
+> **⚠️ Important:** The `WAFU_CONFIG_SECRET` is the master key to your firewall. Anyone who has this key can modify all security rules and settings. Please store it securely.
+
+### 3. Using the Dashboard: Key Features
+
+The admin UI is a comprehensive React-based single-page application that gives you full control over your firewall. Key
+sections include:
+
+* **Dashboard:** A real-time overview of security events, showing blocked vs. allowed requests, top threats, and traffic
+  patterns.
+* **Routes:** Configure which hostnames WAFu should protect. For each route, you can specify its origin (public address
+  or private service binding) and link it to a set of rules.
+* **Global Rules:** Define high-priority firewall rules that apply to *all* traffic passing through WAFu, regardless of
+  the route.
+* **Route Rules:** Create granular firewall rules that apply only to a specific route. This is where you'll define most
+  of your application-specific logic.
+* **Threat Intelligence:** Manage and view the status of third-party threat feeds. WAFu automatically updates these
+  lists in the background.
+* **Authentication:**
+    * **Gates:** Protect specific paths with authentication, requiring users to log in before they can access the
+      underlying page.
+    * **Users & Groups:** Manage users and group memberships for role-based access control (RBAC).
+    * **One-Time Links (OTP):** Generate secure, single-use login links for passwordless authentication.
+* **Live SQL & Logs:**
+    * **Event Log:** A searchable log of every request processed by WAFu.
+    * **Live SQL:** A powerful query engine that lets you run complex SQL queries directly against the event logs stored
+      in SQLite for deep analysis.
+    * **Audit Log:** An immutable log that records every configuration change made through the UI, providing a clear
+      trail of who changed what, and when.
