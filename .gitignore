@@ -8,3 +8,4 @@
 out
 gen
 .gitattributes
+.DS_Store
