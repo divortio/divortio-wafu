@@ -30,19 +30,31 @@ WAFU_ADMIN_SECRET = "your-super-secret-admin-password"
 JWT_SECRET = "your-strong-jwt-signing-secret"
 
 
-# --- Durable Object Bindings ---
-[durable_objects]
-bindings = [
-    { name = "WAFU_GLOBAL_DO", class_name = "GlobalRulesDO" },
-    { name = "WAFU_ROUTE_DO", class_name = "RouteRulesDO" },
-    { name = "WAFU_OTP_DO", class_name = "OtpDO" },
-    { name = "WAFU_EVENT_LOGS_DO", class_name = "EventLogsDO" },
-    { name = "WAFU_AUDIT_LOGS_DO", class_name = "AuditLogsDO" }
-]
-
 [[migrations]]
 tag = "v1" # Should be unique for each entry
 new_classes = ["GlobalRulesDO", "RouteRulesDO", "OtpDO", "EventLogsDO", "AuditLogsDO"]
+
+# --- Durable Object Bindings ---
+# The bindings now need to be defined individually.
+[[durable_objects.bindings]]
+name = "WAFU_GLOBAL_DO"
+class_name = "GlobalRulesDO"
+
+[[durable_objects.bindings]]
+name = "WAFU_ROUTE_DO"
+class_name = "RouteRulesDO"
+
+[[durable_objects.bindings]]
+name = "WAFU_OTP_DO"
+class_name = "OtpDO"
+
+[[durable_objects.bindings]]
+name = "WAFU_EVENT_LOGS_DO"
+class_name = "EventLogsDO"
+
+[[durable_objects.bindings]]
+name = "WAFU_AUDIT_LOGS_DO"
+class_name = "AuditLogsDO"
 
 
 # --- KV Namespace Bindings ---
