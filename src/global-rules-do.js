@@ -3,96 +3,39 @@
  * FILE: src/global-rules-do.js
  *
  * DESCRIPTION:
- * Defines the `GlobalRulesDO` class. This version has been definitively
- * corrected to use the proper `this.state.storage.sql.exec()` API for all
- * database operations.
+ * Defines the `GlobalRulesDO` class. This version has been corrected to
+ * extend the base `DurableObject` class, enabling RPC functionality.
  * =============================================================================
  */
 
+import {DurableObject} from "cloudflare:workers";
 import {getRequestData, evaluateExpression} from './utils.js';
 
-export class GlobalRulesDO {
-    constructor(state, env) {
-        this.state = state;
+// The class now extends DurableObject
+export class GlobalRulesDO extends DurableObject {
+    constructor(ctx, env) {
+        super(ctx, env); // Must call super()
+        this.ctx = ctx;
         this.env = env;
         this.cache = null;
 
-        this.state.blockConcurrencyWhile(async () => {
-            await this.initializeDatabase();
-        });
+        // Use this.ctx.waitUntil to run initialization without blocking the constructor
+        this.ctx.waitUntil(this.initializeDatabase());
     }
 
     /**
      * Creates all necessary SQLite tables if they don't already exist.
      */
     async initializeDatabase() {
-        const sql = this.state.storage.sql;
-        // The `batch` method is not available; we execute statements sequentially.
-        await sql.exec(`CREATE TABLE IF NOT EXISTS global_rules
-                            (
-                                id                    TEXT
-                                    PRIMARY KEY,
-                                name                  TEXT,
-                                description           TEXT,
-                                enabled               INTEGER,
-                                action                TEXT,
-                                expression            TEXT,
-                                tags                  TEXT,
-                                priority              INTEGER,
-                                trigger_alert         INTEGER,
-                                block_http_code       INTEGER
-                            )`);
-        await sql.exec(`CREATE TABLE IF NOT EXISTS routes
-                            (
-                                id                            TEXT
-                                    PRIMARY KEY,
-                                incominghost                  TEXT
-                                    UNIQUE,
-                                origin_type                   TEXT,
-                                origin_url                    TEXT,
-                                origin_service_name           TEXT,
-                                enabled                       INTEGER
-                            )`);
-        await sql.exec(`CREATE TABLE IF NOT EXISTS users
-                            (
-                                id                        TEXT
-                                    PRIMARY KEY, username TEXT
-                                    UNIQUE, password_hash TEXT, role TEXT, created_at INTEGER
-                            )`);
-        await sql.exec(`CREATE TABLE IF NOT EXISTS gates
-                            (
-                                id                        TEXT
-                                    PRIMARY KEY,
-                                name                      TEXT,
-                                jwt_secret                TEXT,
-                                access_token_ttl_seconds  INTEGER,
-                                refresh_token_ttl_seconds INTEGER
-                            )`);
-        await sql.exec(`CREATE TABLE IF NOT EXISTS threat_feeds
-                            (
-                                id                    TEXT
-                                    PRIMARY KEY,
-                                name                  TEXT,
-                                url                   TEXT,
-                                enabled               INTEGER,
-                                refresh_schedule      TEXT,
-                                last_updated_at       INTEGER,
-                                last_update_status    TEXT,
-                                last_update_error     TEXT,
-                                item_count            INTEGER,
-                                kv_size_bytes         INTEGER,
-                                type                  TEXT
-                            )`);
-        await sql.exec(`CREATE TABLE IF NOT EXISTS integrations
-                            (
-                                id                    TEXT
-                                    PRIMARY KEY, name TEXT, type TEXT, url TEXT, enabled INTEGER
-                            )`);
-        await sql.exec(`CREATE TABLE IF NOT EXISTS error_pages
-                            (
-                                http_code             INTEGER
-                                    PRIMARY KEY, name TEXT, description TEXT, content_type TEXT, body TEXT
-                            )`);
+        // The storage API is now on this.ctx.storage
+        const sql = this.ctx.storage.sql;
+        await sql.exec(`CREATE TABLE IF NOT EXISTS global_rules (id TEXT PRIMARY KEY, name TEXT, description TEXT, enabled INTEGER, action TEXT, expression TEXT, tags TEXT, priority INTEGER, trigger_alert INTEGER, block_http_code INTEGER)`);
+        await sql.exec(`CREATE TABLE IF NOT EXISTS routes (id TEXT PRIMARY KEY, incominghost TEXT UNIQUE, origin_type TEXT, origin_url TEXT, origin_service_name TEXT, enabled INTEGER)`);
+        await sql.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT, role TEXT, created_at INTEGER)`);
+        await sql.exec(`CREATE TABLE IF NOT EXISTS gates (id TEXT PRIMARY KEY, name TEXT, jwt_secret TEXT, access_token_ttl_seconds INTEGER, refresh_token_ttl_seconds INTEGER)`);
+        await sql.exec(`CREATE TABLE IF NOT EXISTS threat_feeds (id TEXT PRIMARY KEY, name TEXT, url TEXT, enabled INTEGER, refresh_schedule TEXT, last_updated_at INTEGER, last_update_status TEXT, last_update_error TEXT, item_count INTEGER, kv_size_bytes INTEGER, type TEXT)`);
+        await sql.exec(`CREATE TABLE IF NOT EXISTS integrations (id TEXT PRIMARY KEY, name TEXT, type TEXT, url TEXT, enabled INTEGER)`);
+        await sql.exec(`CREATE TABLE IF NOT EXISTS error_pages (http_code INTEGER PRIMARY KEY, name TEXT, description TEXT, content_type TEXT, body TEXT)`);
     }
 
     /**
@@ -101,9 +44,8 @@ export class GlobalRulesDO {
     async loadCache() {
         if (this.cache) return;
         console.log("GlobalRulesDO: Cache miss. Reloading from SQLite.");
-        const sql = this.state.storage.sql;
+        const sql = this.ctx.storage.sql;
 
-        // We must fetch results for each table separately.
         const routesPromise = sql.exec("SELECT * FROM routes");
         const globalRulesPromise = sql.exec("SELECT * FROM global_rules");
         const errorPagesPromise = sql.exec("SELECT * FROM error_pages");
@@ -180,7 +122,7 @@ export class GlobalRulesDO {
      * Handles CRUD operations for global rules.
      */
     async handleRulesApi(request) {
-        const sql = this.state.storage.sql;
+        const sql = this.ctx.storage.sql;
         const url = new URL(request.url);
         const ruleId = url.pathname.split('/').pop();
 

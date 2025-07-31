@@ -3,41 +3,40 @@
  * FILE: src/audit-logs-do.js
  *
  * DESCRIPTION:
- * Defines the `AuditLogsDO` class. This version has been corrected to use
- * the proper `this.state.storage.sql.exec()` API for all database operations.
+ * Defines the `AuditLogsDO` class. This version has been corrected to
+ * extend the base `DurableObject` class, enabling RPC functionality.
  * =============================================================================
  */
 
-export class AuditLogsDO {
-    /**
-     * The constructor for the Durable Object.
-     * @param {DurableObjectState} state - The state object providing access to storage.
-     * @param {object} env - The environment object containing bindings.
-     */
-    constructor(state, env) {
-        this.state = state;
+import {DurableObject} from "cloudflare:workers";
+
+// The class now extends DurableObject
+export class AuditLogsDO extends DurableObject {
+    constructor(ctx, env) {
+        super(ctx, env); // Must call super()
+        this.ctx = ctx;
         this.env = env;
-        this.state.blockConcurrencyWhile(async () => {
-            await this.initializeDatabase();
-        });
+
+        this.ctx.waitUntil(this.initializeDatabase());
     }
 
     /**
      * Creates the SQLite table for audit logs if it doesn't already exist.
      */
     async initializeDatabase() {
-        await this.state.storage.sql.exec(`
+        const sql = this.ctx.storage.sql;
+        await sql.exec(`
             CREATE TABLE IF NOT EXISTS audit_logs
                 (
                     id                         TEXT
                         PRIMARY KEY,
                     timestamp                  INTEGER NOT NULL,
                     user_id                    TEXT    NOT NULL,
-                    context                    TEXT    NOT NULL, -- e.g., 'global', 'route-1'
-                    action                     TEXT    NOT NULL, -- e.g., 'CREATE_RULE', 'UPDATE_ROUTE', 'DELETE_USER'
-                    target_id                  TEXT    NOT NULL, -- The ID of the object that was changed
-                    data_before                TEXT,             -- JSON string of the object before the change
-                    data_after                 TEXT              -- JSON string of the object after the change
+                    context                    TEXT    NOT NULL,
+                    action                     TEXT    NOT NULL,
+                    target_id                  TEXT    NOT NULL,
+                    data_before                TEXT,
+                    data_after                 TEXT
                 )
         `);
     }
@@ -47,9 +46,9 @@ export class AuditLogsDO {
      */
     async fetch(request) {
         const url = new URL(request.url);
-        const sql = this.state.storage.sql;
+        const sql = this.ctx.storage.sql;
 
-        // --- API Endpoint for UI to Query Logs ---
+        // API Endpoint for UI to Query Logs
         if (url.pathname.startsWith('/api/global/audit-logs') && request.method === 'GET') {
             try {
                 const params = url.searchParams;
@@ -61,21 +60,21 @@ export class AuditLogsDO {
                 let bindings = [];
 
                 if (params.get('userId')) {
-                    whereClauses.push("user_id = ?1");
+                    whereClauses.push("user_id = ?");
                     bindings.push(params.get('userId'));
                 }
                 if (params.get('context')) {
-                    whereClauses.push("context = ?2");
+                    whereClauses.push("context = ?");
                     bindings.push(params.get('context'));
                 }
                 if (params.get('action')) {
-                    whereClauses.push("action = ?3");
+                    whereClauses.push("action = ?");
                     bindings.push(params.get('action'));
                 }
 
                 const whereString = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-                const dataQuery = `SELECT * FROM audit_logs ${whereString} ORDER BY timestamp DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
+                const dataQuery = `SELECT * FROM audit_logs ${whereString} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
                 const dataBindings = [...bindings, limit, offset];
 
                 const countQuery = `SELECT COUNT(*) AS total FROM audit_logs ${whereString}`;
@@ -105,7 +104,7 @@ export class AuditLogsDO {
             }
         }
 
-        // --- Internal Endpoint for Other DOs to Write a Log Entry ---
+        // Internal Endpoint for Other DOs to Write a Log Entry
         if (url.pathname === '/log' && request.method === 'POST') {
             try {
                 const logEntry = await request.json();
@@ -115,7 +114,10 @@ export class AuditLogsDO {
                 }
 
                 await sql.exec(
-                    `INSERT INTO audit_logs (id, timestamp, user_id, context, action, target_id, data_before, data_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    `INSERT INTO
+                         audit_logs (id, timestamp, user_id, context, action, target_id, data_before, data_after)
+                         VALUES
+                             (?, ?, ?, ?, ?, ?, ?, ?)`,
                     [
                         crypto.randomUUID(),
                         logEntry.timestamp || Date.now(),

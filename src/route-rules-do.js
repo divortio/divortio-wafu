@@ -3,30 +3,33 @@
  * FILE: src/route-rules-do.js
  *
  * DESCRIPTION:
- * Defines the `RouteRulesDO` class. This version has been corrected to use
- * the proper `this.state.storage.sql.exec()` API for all database operations.
+ * Defines the `RouteRulesDO` class. This version has been corrected to
+ * extend the base `DurableObject` class, enabling RPC functionality.
  * =============================================================================
  */
 
+import {DurableObject} from "cloudflare:workers";
 import {getRequestData, evaluateExpression} from './utils.js';
 
-export class RouteRulesDO {
-    constructor(state, env) {
-        this.state = state;
+// The class now extends DurableObject
+export class RouteRulesDO extends DurableObject {
+    constructor(ctx, env) {
+        super(ctx, env); // Must call super()
+        this.ctx = ctx;
         this.env = env;
-        this.cache = null; // In-memory cache for this route's rules
+        this.cache = null;
 
-        this.state.blockConcurrencyWhile(async () => {
-            await this.initializeDatabase();
-        });
+        // Use this.ctx.waitUntil to run initialization without blocking the constructor
+        this.ctx.waitUntil(this.initializeDatabase());
     }
 
     /**
      * Creates the route-specific rules table if it doesn't already exist.
      */
     async initializeDatabase() {
-        // Use the correct API: this.state.storage.sql.exec()
-        await this.state.storage.sql.exec(`
+        // The storage API is now on this.ctx.storage
+        const sql = this.ctx.storage.sql;
+        await sql.exec(`
             CREATE TABLE IF NOT EXISTS route_rules
                 (
                     id                    TEXT
@@ -49,9 +52,8 @@ export class RouteRulesDO {
      */
     async loadCache() {
         if (this.cache) return;
-        console.log(`RouteRulesDO (${this.state.id}): Cache miss. Reloading from SQLite.`);
-        // Use the correct API: this.state.storage.sql.exec()
-        const {results} = await this.state.storage.sql.exec("SELECT * FROM route_rules");
+        console.log(`RouteRulesDO (${this.id}): Cache miss. Reloading from SQLite.`);
+        const {results} = await this.ctx.storage.sql.exec("SELECT * FROM route_rules");
         this.cache = results.map(r => ({...r, expression: JSON.parse(r.expression), tags: JSON.parse(r.tags)}));
     }
 
@@ -63,7 +65,6 @@ export class RouteRulesDO {
 
         for (const rule of activeRules) {
             if (evaluateExpression(rule.expression, requestData)) {
-                // First matching rule determines the outcome for this route.
                 return {
                     action: rule.action,
                     matchedRuleId: rule.id,
@@ -100,7 +101,7 @@ export class RouteRulesDO {
      * Handles CRUD operations for route-specific rules.
      */
     async handleRulesApi(request) {
-        const sql = this.state.storage.sql;
+        const sql = this.ctx.storage.sql;
         const url = new URL(request.url);
         const ruleId = url.pathname.split('/').slice(-2, -1)[0];
 
@@ -111,7 +112,6 @@ export class RouteRulesDO {
 
         if (request.method === 'POST') {
             const rule = await request.json();
-            // Use the correct API: sql.exec() with bindings
             await sql.exec(
                 "INSERT INTO route_rules (id, name, description, enabled, action, expression, tags, priority, trigger_alert, block_http_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [rule.id, rule.name, rule.description, rule.enabled, rule.action, JSON.stringify(rule.expression), JSON.stringify(rule.tags), rule.priority, rule.trigger_alert, rule.block_http_code]
@@ -121,7 +121,6 @@ export class RouteRulesDO {
 
         if (request.method === 'PUT' && ruleId) {
             const rule = await request.json();
-            // Use the correct API: sql.exec() with bindings
             await sql.exec(
                 "UPDATE route_rules SET name=?, description=?, enabled=?, action=?, expression=?, tags=?, priority=?, trigger_alert=?, block_http_code=? WHERE id=?",
                 [rule.name, rule.description, rule.enabled, rule.action, JSON.stringify(rule.expression), JSON.stringify(rule.tags), rule.priority, rule.trigger_alert, rule.block_http_code, ruleId]
@@ -130,7 +129,6 @@ export class RouteRulesDO {
         }
 
         if (request.method === 'DELETE' && ruleId) {
-            // Use the correct API: sql.exec() with bindings
             await sql.exec("DELETE FROM route_rules WHERE id = ?", [ruleId]);
             return new Response('Rule deleted');
         }
