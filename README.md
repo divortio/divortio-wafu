@@ -35,6 +35,38 @@ ever reach your origin servers.
 
 ---
 
+## 🏗️ Project Structure
+
+The project is organized into two main parts: the backend Worker logic in the `src/` directory and the frontend admin UI
+in the `public/` directory.
+
+### Backend (`src/`)
+
+The backend is a Cloudflare Worker that uses several Durable Objects to manage state.
+
+* `worker.js`: The main entry point for all incoming traffic. It routes requests to the appropriate Durable Object.
+* `global-rules-do.js`: A singleton Durable Object that manages global configuration and rules that apply to all
+  traffic.
+* `route-rules-do.js`: A Durable Object class where a unique instance is created for each route you protect, holding its
+  specific rules.
+* `utils.js`: A shared module containing the core rule evaluation engine, used by both `global-rules-do.js`
+  and `route-rules-do.js` to avoid code duplication.
+* Other `*-do.js` files provide additional stateful services like authentication and logging.
+
+### Frontend (`public/`)
+
+The frontend is a modular, build-less React application. All files are standard JavaScript and are served as static
+assets.
+
+* `index.html`: The main HTML file that loads all the necessary scripts.
+* `config.js`: Contains the default, demo configuration for a fresh deployment.
+* `globals.js`: Defines global constants for React hooks (`useState`, etc.) to be shared across all UI scripts.
+* `constants.js`, `fields.js`, `utils.js`: Contain static data, icons, and helper functions for the UI.
+* `components.js`: Contains reusable React components (e.g., the Rule Editor modal).
+* `views.js`: Contains the main "page" components (e.g., the Firewall Rules page).
+* `ui.js`: The main application script that ties everything together and renders the UI.
+
+---
 ## 🛠️ Deployment Instructions
 
 This guide is broken into five phases to get you from a fresh clone to a fully secured application.

@@ -4,55 +4,107 @@
  *
  * DESCRIPTION:
  * The main entry point and orchestrator for the distributed WAFu system.
- * This worker is the "brain" that decides which Durable Object to call and
- * how to route traffic. It includes full RBAC enforcement and a `scheduled`
- * handler that triggers both threat feed updates and analytics aggregation.
- *
- * EXECUTION FLOW (fetch):
- * 1. Static Assets: Requests for the UI (`/` or `/_wafu/*`) are served first.
- * 2. API Proxy: Requests to `/api/*` are intercepted. The user's role is
- * determined, and RBAC is enforced. The request is then forwarded to the
- * appropriate Durable Object.
- * 3. WAF Evaluation: All other requests are treated as traffic to be protected.
- * a. A stateless "hot path" performs initial checks against KV-based
- * threat intelligence feeds.
- * b. The request is then sent to the GlobalRulesDO for the first stage of
- * stateful evaluation.
- * c. If allowed by global rules, the request is sent to the specific
- * RouteRulesDO for the final stage of evaluation.
- * d. The final decision (ALLOW, BLOCK, AUTH, etc.) is enforced.
- * e. All decisions are logged asynchronously to the EventLogsDO.
- *
- * EXECUTION FLOW (scheduled):
- * Triggered by a cron, this handler calls the appropriate DOs to kick off
- * background tasks for updating threat feeds and aggregating analytics data.
+ * This final version includes full origin proxying logic and a secure,
+ * JWT-based authentication system for the admin API.
  * =============================================================================
  */
 
-// Import all Durable Object classes that will be bound in wrangler.toml
 import {GlobalRulesDO} from './global-rules-do.js';
 import {RouteRulesDO} from './route-rules-do.js';
 import {OtpDO} from './otp-do.js';
 import {EventLogsDO} from './event-logs-do.js';
 import {AuditLogsDO} from './audit-logs-do.js';
 
+// --- Self-Contained JWT Validation ---
+
 /**
- * Simulates decoding a JWT to get the user's identity.
- * In a real-world application, this would use a library like `jose` to
- * verify a JWT from the Authorization header or a secure cookie.
- * @param {Request} request - The incoming HTTP request.
- * @returns {{id: string, role: string}} The user's identity.
+ * Decodes the payload of a JWT without verifying the signature.
+ * @param {string} token - The JWT string.
+ * @returns {object|null} The decoded payload or null if parsing fails.
  */
-const getUserFromToken = (request) => {
-    // This is a placeholder for a real authentication system.
-    // It allows toggling between admin and viewer for demo purposes.
-    const authHeader = request.headers.get('Authorization');
-    if (authHeader === 'viewer-token') {
-        return {id: 'viewer@wafu.com', role: 'viewer'};
+function decodeJwtPayload(token) {
+    try {
+        const payload = token.split('.')[1];
+        const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+        return JSON.parse(decoded);
+    } catch (e) {
+        return null;
     }
-    // Default to administrator for the demo
-    return {id: 'admin@wafu.com', role: 'administrator'};
-};
+}
+
+/**
+ * Verifies the signature of a JWT using HMAC SHA-256.
+ * @param {string} token - The JWT string.
+ * @param {string} secret - The secret key for verification.
+ * @returns {Promise<boolean>} True if the signature is valid.
+ */
+async function verifyJwt(token, secret) {
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) return false;
+
+        const [header, payload, signature] = parts;
+        const data = `${header}.${payload}`;
+
+        const key = await crypto.subtle.importKey(
+            'raw',
+            new TextEncoder().encode(secret),
+            {name: 'HMAC', hash: 'SHA-256'},
+            false,
+            ['verify']
+        );
+
+        let signatureBytes;
+        try {
+            signatureBytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+        } catch (e) {
+            return false; // Invalid base64 signature
+        }
+
+        return await crypto.subtle.verify('HMAC', key, signatureBytes, new TextEncoder().encode(data));
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Authenticates a request by validating its JWT.
+ * @param {Request} request - The incoming HTTP request.
+ * @param {object} env - The environment object containing bindings.
+ * @returns {Promise<{isAuthenticated: boolean, user: object|null}>}
+ */
+async function getAdminUserFromJwt(request, env) {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return {isAuthenticated: false, user: null};
+    }
+
+    const token = authHeader.substring(7);
+    const isValid = await verifyJwt(token, env.WAFU_CONFIG_SECRET);
+
+    if (!isValid) {
+        return {isAuthenticated: false, user: null};
+    }
+
+    const payload = decodeJwtPayload(token);
+    if (!payload) {
+        return {isAuthenticated: false, user: null};
+    }
+
+    // Check expiration
+    if (payload.exp && Date.now() / 1000 > payload.exp) {
+        return {isAuthenticated: false, user: null};
+    }
+
+    return {
+        isAuthenticated: true,
+        user: {
+            id: payload.sub,
+            role: 'administrator' // In a real system, this would come from the token or a DB lookup
+        }
+    };
+}
+
 
 export default {
     /**
@@ -65,33 +117,32 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
-        // --- ROUTE 1: User-Facing UI & Auth Pages ---
-        // Serve the single-page React application for the root or special auth paths.
-        if (url.pathname === '/' || url.pathname.startsWith('/_wafu/')) {
-            // The `[[site]]` configuration in wrangler.toml handles this automatically.
-            // We pass through to the static asset handler.
+        // --- ROUTE 1: User-Facing Admin UI ---
+        if (url.pathname.startsWith('/wafu-admin')) {
             return env.ASSETS.fetch(request);
         }
 
         // --- ROUTE 2: API Proxy for the UI ---
         if (url.pathname.startsWith('/api/')) {
-            const user = getUserFromToken(request);
+            const {isAuthenticated, user} = await getAdminUserFromJwt(request, env);
 
-            // Enforce RBAC: Only administrators can perform write operations.
-            if (request.method !== 'GET') {
-                if (user.role !== 'administrator') {
-                    return new Response(JSON.stringify({error: 'Forbidden: Viewers cannot perform this action.'}), {
-                        status: 403,
-                        headers: {'Content-Type': 'application/json'}
-                    });
-                }
+            if (!isAuthenticated) {
+                return new Response(JSON.stringify({error: 'Unauthorized'}), {
+                    status: 401,
+                    headers: {'Content-Type': 'application/json'}
+                });
             }
 
-            // Clone the request to add the user's identity for auditing purposes.
+            if (request.method !== 'GET' && user.role !== 'administrator') {
+                return new Response(JSON.stringify({error: 'Forbidden: Viewers cannot perform this action.'}), {
+                    status: 403,
+                    headers: {'Content-Type': 'application/json'}
+                });
+            }
+
             const apiRequest = new Request(request);
             apiRequest.headers.set('X-WAFu-User-ID', user.id);
 
-            // Proxy the API request to the appropriate Durable Object.
             const globalDO = env.WAFU_GLOBAL_DO.get(env.WAFU_GLOBAL_DO.idFromName('singleton'));
 
             if (url.pathname.startsWith('/api/global/')) {
@@ -111,7 +162,7 @@ export default {
             });
         }
 
-        // --- ROUTE 3: WAF Evaluation for Site Traffic ---
+        // --- ROUTE 3: WAF Evaluation for All Other Traffic ---
         const wafRequestPayload = {
             url: request.url,
             method: request.method,
@@ -119,19 +170,9 @@ export default {
             cf: request.cf,
         };
 
-        // STAGE 1: Global Rule Evaluation
         const globalDO = env.WAFU_GLOBAL_DO.get(env.WAFU_GLOBAL_DO.idFromName('singleton'));
-        const globalEvalRequest = new Request('https://wafu.internal/evaluate', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(wafRequestPayload)
-        });
+        const globalDecision = await globalDO.evaluate(wafRequestPayload);
 
-        const globalDecisionResponse = await globalDO.fetch(globalEvalRequest);
-        if (!globalDecisionResponse.ok) return new Response('Error evaluating global rules', {status: 500});
-        const globalDecision = await globalDecisionResponse.json();
-
-        // Enforce terminal actions from Global Rules
         if (globalDecision.action === 'BLOCK' || globalDecision.action === 'CHALLENGE') {
             return new Response(globalDecision.blockResponse.body, {
                 status: globalDecision.blockResponse.statusCode,
@@ -143,25 +184,20 @@ export default {
             return new Response(`WAFu: Request blocked by global policy for host "${request.headers.get('host')}".`, {status: 403});
         }
 
-        // STAGE 2: Route-Specific Rule Evaluation
         const route = globalDecision.matchedRoute;
         const routeDO = env.WAFU_ROUTE_DO.get(env.WAFU_ROUTE_DO.idFromName(route.id));
-
-        const routeEvalRequest = new Request('https://wafu.internal/evaluate', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(wafRequestPayload)
-        });
-
-        const routeDecisionResponse = await routeDO.fetch(routeEvalRequest);
-        if (!routeDecisionResponse.ok) return new Response('Error evaluating route rules', {status: 500});
-        const routeDecision = await routeDecisionResponse.json();
+        const routeDecision = await routeDO.evaluate(wafRequestPayload);
 
         if (routeDecision.action === 'ALLOW' || routeDecision.action === 'LOG') {
-            // ... (Proxying logic will be added in a future step)
-            return new Response(`Request allowed for route ${route.incomingHost}. Would be proxied to ${route.originUrl}.`);
+            if (route.origin_type === 'service' && env[route.origin_service_name]) {
+                const service = env[route.origin_service_name];
+                return service.fetch(request);
+            } else if (route.origin_type === 'url' && route.origin_url) {
+                return fetch(route.origin_url, request);
+            } else {
+                return new Response(`WAFu Error: The origin for route ${route.incomingHost} is not correctly configured.`, {status: 500});
+            }
         } else {
-            // Default block from route-level, or explicit block/challenge
             return new Response(globalDecision.blockResponse.body, {
                 status: globalDecision.blockResponse.statusCode,
                 headers: {'Content-Type': globalDecision.blockResponse.contentType},
@@ -169,12 +205,6 @@ export default {
         }
     },
 
-    /**
-     * The scheduled event handler, triggered by the cron in wrangler.toml.
-     * @param {ScheduledEvent} event - The scheduled event object.
-     * @param {object} env - The environment object containing bindings.
-     * @param {object} ctx - The execution context.
-     */
     async scheduled(event, env, ctx) {
         console.log(`Cron triggered at ${new Date(event.scheduledTime)}`);
         const globalDO = env.WAFU_GLOBAL_DO.get(env.WAFU_GLOBAL_DO.idFromName('singleton'));
@@ -185,7 +215,6 @@ export default {
     },
 };
 
-// Export all Durable Object classes so Wrangler can recognize them.
 export {GlobalRulesDO} from './global-rules-do.js';
 export {RouteRulesDO} from './route-rules-do.js';
 export {OtpDO} from './otp-do.js';

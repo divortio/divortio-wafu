@@ -4,6 +4,7 @@
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>WAFu - Control Panel</title>
+    <base href=".">
 
     <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -11,9 +12,6 @@
     <!-- React Libraries -->
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-
-    <!-- Babel to transpile JSX in the browser -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <!-- Chart.js for Analytics Dashboard -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -30,7 +28,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <style>
-        /* New "Secure & Serene" Style System */
+        /* Custom Style System */
         :root {
             --wafu-indigo: #4A55A2;
             --wafu-sakura: #F7C8E0;
@@ -48,7 +46,7 @@
         .cf-card {
             background-color: white;
             border: 1px solid #e5e7eb;
-            border-radius: 0.5rem; /* Softer corners */
+            border-radius: 0.5rem;
             box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
             border-top-width: 4px;
         }
@@ -56,6 +54,7 @@
         .cf-button-primary {
             background-color: var(--wafu-indigo);
             color: white;
+            font-weight: 600;
         }
 
         .cf-button-primary:hover {
@@ -67,14 +66,42 @@
             cursor: not-allowed;
         }
 
+        .cf-button-secondary {
+            background-color: #e5e7eb;
+            color: #374151;
+            font-weight: 600;
+        }
+
+        .cf-button-secondary:hover {
+            background-color: #d1d5db;
+        }
+
+        .cf-input, .cf-select {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
         .cf-input:focus, .cf-select:focus {
             outline: none;
             border-color: var(--wafu-indigo);
             box-shadow: 0 0 0 2px rgba(74, 85, 162, 0.3);
         }
 
+        .cf-toggle-bg {
+            background-color: #e5e7eb;
+            transition: background-color 0.2s ease-in-out;
+        }
+
         input:checked + .cf-toggle-bg {
             background: var(--wafu-indigo);
+            border-color: var(--wafu-indigo);
+        }
+
+        input:checked + .cf-toggle-bg:after {
+            transform: translateX(100%);
         }
 
         #map {
@@ -92,28 +119,19 @@
 <noscript>You need to enable JavaScript to run this app.</noscript>
 <div id="root"></div>
 
-<!-- Main Application UI Script -->
-<script type="text/babel">
-    const {useState, useEffect, useCallback, useRef, createContext, useContext} = React;
+<!--
+  WAFu Application Scripts
+  These are plain JavaScript files and do not require Babel.
+  The order of these scripts is critical for the application to run.
+-->
+<script src="config.js"></script>
+<script src="fields.js"></script>
+<script src="utils.js"></script>
+<script src="constants.js"></script>
+<script src="globals.js"></script>
+<script src="components.js"></script>
+<script src="views.js"></script>
+<script src="ui.js"></script>
 
-    // --- ICONS, CONSTANTS, UTILS ---
-    // (Full implementation of all constants and utility functions)
-
-    // --- All UI Components ---
-    // (Full implementation of all React components: App, FirewallRulesView, RoutesView, etc.)
-
-    function App() {
-        // ... (Full App component logic with state management, API calls, and routing)
-        return (
-            <div>
-                <h1>WAFu Control Panel</h1>
-                <p>This is the fully embedded WAFu application. All features are now implemented within this script.</p>
-            </div>
-        );
-    }
-
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App/>);
-</script>
 </body>
 </html>

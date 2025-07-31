@@ -9,3 +9,5 @@ out
 gen
 .gitattributes
 .DS_Store
+/.idea
+.idea/jsLibraryMappings.xml
