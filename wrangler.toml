@@ -6,7 +6,7 @@
 # for Durable Objects, KV, Services, and the cron trigger for scheduled tasks.
 # -----------------------------------------------------------------------------
 
-name = "wafu"
+name = "wafu" # replace with name in Cloudflare UI
 main = "src/worker.js"
 compatibility_date = "2025-07-31"
 
@@ -65,7 +65,7 @@ id = "YOUR_KV_NAMESPACE_ID_HERE"
 # --- Service Bindings ---
 [[services]]
 binding = "SELF"
-service = "wafu"
+service = "wafu" #
 
 [[services]]
 binding = "MY_API_WORKER"
