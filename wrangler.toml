@@ -10,41 +10,48 @@ name = "wafu"
 main = "src/worker.js"
 compatibility_date = "2025-07-31"
 
+# --- Environment Variables ---
+# These variables are accessible inside the Worker at `env.VARIABLE_NAME`
+[vars]
+# This secret is the master password for the admin to log in.
+# It should be set via the command line for security:
+# `wrangler secret put WAFU_ADMIN_SECRET`
+WAFU_ADMIN_SECRET = "your-super-secret-admin-password"
+
+# This secret is used to sign and verify all JWTs (for both admin and OTP sessions).
+# It should also be set via the command line:
+# `wrangler secret put JWT_SECRET`
+JWT_SECRET = "your-strong-jwt-signing-secret"
+
+
 # --- Durable Object Bindings ---
-# Binds variables in the worker's code to the Durable Object classes.
 [durable_objects]
 bindings = [
-  { name = "WAFU_GLOBAL_DO", class_name = "GlobalRulesDO" },
-  { name = "WAFU_ROUTE_DO", class_name = "RouteRulesDO" },
-  { name = "WAFU_OTP_DO", class_name = "OtpDO" },
-  { name = "WAFU_EVENT_LOGS_DO", class_name = "EventLogsDO" },
-  { name = "WAFU_AUDIT_LOGS_DO", class_name = "AuditLogsDO" }
+    { name = "WAFU_GLOBAL_DO", class_name = "GlobalRulesDO" },
+    { name = "WAFU_ROUTE_DO", class_name = "RouteRulesDO" },
+    { name = "WAFU_OTP_DO", class_name = "OtpDO" },
+    { name = "WAFU_EVENT_LOGS_DO", class_name = "EventLogsDO" },
+    { name = "WAFU_AUDIT_LOGS_DO", class_name = "AuditLogsDO" }
 ]
 
 # --- KV Namespace Bindings ---
-# You must create this namespace in the Cloudflare dashboard and place its ID here.
-# `wrangler kv:namespace create WAFU_LOOKUP_TABLES`
 [[kv_namespaces]]
 binding = "WAFU_LOOKUP_TABLES"
 id = "YOUR_KV_NAMESPACE_ID_HERE"
 
 # --- Service Bindings ---
-# A binding for the worker to call itself for background tasks like sending alerts.
 [[services]]
 binding = "SELF"
-service = "wafu" # Must match the 'name' at the top of this file
+service = "wafu"
 
-# Binding for a protected origin worker. Add more as needed.
 [[services]]
 binding = "MY_API_WORKER"
 service = "my-api-worker"
 
 # --- Scheduled Worker Trigger ---
-# Runs every 15 minutes for analytics aggregation & feed updates.
 [triggers]
 crons = ["*/15 * * * *"]
 
 # --- Static Asset Serving ---
-# Configures the Worker to serve static files from the "./public" directory.
 [[site]]
 bucket = "./public"

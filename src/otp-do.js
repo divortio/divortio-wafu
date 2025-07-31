@@ -3,9 +3,9 @@
  * FILE: src/otp-do.js
  *
  * DESCRIPTION:
- * Defines the `OtpDO` class. This version now includes a secure, self-contained
- * JWT generation function to create real session tokens, making the OTP
- * authentication flow fully functional.
+ * Defines the `OtpDO` class. This version has been updated to use the dedicated
+ * JWT_SECRET for signing session tokens, aligning it with the new, more
+ * secure authentication architecture.
  * =============================================================================
  */
 
@@ -94,7 +94,7 @@ export class OtpDO {
 
                 await ctx.sql.prepare("UPDATE otp_state SET activated_at = ?").bind(now).run();
 
-                // Generate a real JWT for the user session.
+                // Generate a real JWT for the user session using the dedicated JWT_SECRET.
                 const accessTokenPayload = {
                     sub: current.user_id,
                     gate: current.gate_id,
@@ -103,14 +103,13 @@ export class OtpDO {
                     exp: Math.floor(now / 1000) + (60 * 15) // 15-minute expiration
                 };
 
-                const accessToken = await createJwt(accessTokenPayload, this.env.WAFU_CONFIG_SECRET);
+                const accessToken = await createJwt(accessTokenPayload, this.env.JWT_SECRET);
 
                 result = {
                     success: true,
                     message: "Session created successfully.",
                     accessToken: accessToken,
-                    // In a real implementation, a long-lived refresh token would also be generated.
-                    refreshToken: "placeholder-refresh-token"
+                    refreshToken: "placeholder-refresh-token" // Placeholder for a full refresh token implementation
                 };
             });
             return new Response(JSON.stringify(result), {headers: {'Content-Type': 'application/json'}});
@@ -129,23 +128,23 @@ export class OtpDO {
 
             await this.state.storage.sql.run(
                 `CREATE TABLE otp_state
-                     (
-                         token                    TEXT
-                             PRIMARY KEY,
-                         user_id                  TEXT    NOT NULL,
-                         gate_id                  TEXT    NOT NULL,
-                         context                  TEXT    NOT NULL,
-                         created_at               INTEGER NOT NULL,
-                         expires_at               INTEGER NOT NULL,
-                         activated_at             INTEGER
-                     )`
+                         (
+                             token        TEXT
+                                 PRIMARY KEY,
+                             user_id      TEXT    NOT NULL,
+                             gate_id      TEXT    NOT NULL,
+                             context      TEXT    NOT NULL,
+                             created_at   INTEGER NOT NULL,
+                             expires_at   INTEGER NOT NULL,
+                             activated_at INTEGER
+                         )`
             );
 
             const stmt = this.state.storage.sql.prepare(
                 `INSERT INTO
-                     otp_state (token, user_id, gate_id, context, created_at, expires_at, activated_at)
-                     VALUES
-                         (?, ?, ?, ?, ?, ?, NULL)`
+                         otp_state (token, user_id, gate_id, context, created_at, expires_at, activated_at)
+                         VALUES
+                             (?, ?, ?, ?, ?, ?, NULL)`
             );
             await stmt.bind(token, userId, gateId, context, Date.now(), expiresAt).run();
 

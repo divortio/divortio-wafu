@@ -4,8 +4,8 @@
  *
  * DESCRIPTION:
  * The main entry point and orchestrator for the distributed WAFu system.
- * This final version includes full origin proxying logic and a secure,
- * JWT-based authentication system for the admin API.
+ * This version includes a secure, JWT-based authentication system for the
+ * admin API, with a dedicated login endpoint for administrators.
  * =============================================================================
  */
 
@@ -15,105 +15,62 @@ import {OtpDO} from './otp-do.js';
 import {EventLogsDO} from './event-logs-do.js';
 import {AuditLogsDO} from './audit-logs-do.js';
 
-// --- Self-Contained JWT Validation ---
+// --- Self-Contained JWT Functions ---
 
 /**
- * Decodes the payload of a JWT without verifying the signature.
- * @param {string} token - The JWT string.
- * @returns {object|null} The decoded payload or null if parsing fails.
+ * Creates a JWT.
+ * @param {object} payload - The data to include in the token.
+ * @param {string} secret - The secret key for signing.
+ * @returns {Promise<string>} The generated JWT.
  */
-function decodeJwtPayload(token) {
+async function createJwt(payload, secret) {
+    const header = {alg: 'HS256', typ: 'JWT'};
+    const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    const encodedPayload = btoa(JSON.stringify(payload)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    const data = `${encodedHeader}.${encodedPayload}`;
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {
+        name: 'HMAC',
+        hash: 'SHA-256'
+    }, false, ['sign']);
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+    const encodedSignature = btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    return `${data}.${encodedSignature}`;
+}
+
+/**
+ * Verifies the signature of a JWT.
+ * @param {string} token - The JWT string.
+ * @param {string} secret - The secret key for verification.
+ * @returns {Promise<object|null>} The decoded payload if valid, otherwise null.
+ */
+async function verifyJwt(token, secret) {
     try {
-        const payload = token.split('.')[1];
-        const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-        return JSON.parse(decoded);
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+
+        const [header, payload, signature] = parts;
+        const data = `${header}.${payload}`;
+        const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {
+            name: 'HMAC',
+            hash: 'SHA-256'
+        }, false, ['verify']);
+        const signatureBytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+        const isValid = await crypto.subtle.verify('HMAC', key, signatureBytes, new TextEncoder().encode(data));
+        if (!isValid) return null;
+
+        const decodedPayload = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+        if (decodedPayload.exp && Date.now() / 1000 > decodedPayload.exp) {
+            return null; // Token expired
+        }
+        return decodedPayload;
     } catch (e) {
         return null;
     }
 }
 
-/**
- * Verifies the signature of a JWT using HMAC SHA-256.
- * @param {string} token - The JWT string.
- * @param {string} secret - The secret key for verification.
- * @returns {Promise<boolean>} True if the signature is valid.
- */
-async function verifyJwt(token, secret) {
-    try {
-        const parts = token.split('.');
-        if (parts.length !== 3) return false;
-
-        const [header, payload, signature] = parts;
-        const data = `${header}.${payload}`;
-
-        const key = await crypto.subtle.importKey(
-            'raw',
-            new TextEncoder().encode(secret),
-            {name: 'HMAC', hash: 'SHA-256'},
-            false,
-            ['verify']
-        );
-
-        let signatureBytes;
-        try {
-            signatureBytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-        } catch (e) {
-            return false; // Invalid base64 signature
-        }
-
-        return await crypto.subtle.verify('HMAC', key, signatureBytes, new TextEncoder().encode(data));
-    } catch (e) {
-        return false;
-    }
-}
-
-/**
- * Authenticates a request by validating its JWT.
- * @param {Request} request - The incoming HTTP request.
- * @param {object} env - The environment object containing bindings.
- * @returns {Promise<{isAuthenticated: boolean, user: object|null}>}
- */
-async function getAdminUserFromJwt(request, env) {
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return {isAuthenticated: false, user: null};
-    }
-
-    const token = authHeader.substring(7);
-    const isValid = await verifyJwt(token, env.WAFU_CONFIG_SECRET);
-
-    if (!isValid) {
-        return {isAuthenticated: false, user: null};
-    }
-
-    const payload = decodeJwtPayload(token);
-    if (!payload) {
-        return {isAuthenticated: false, user: null};
-    }
-
-    // Check expiration
-    if (payload.exp && Date.now() / 1000 > payload.exp) {
-        return {isAuthenticated: false, user: null};
-    }
-
-    return {
-        isAuthenticated: true,
-        user: {
-            id: payload.sub,
-            role: 'administrator' // In a real system, this would come from the token or a DB lookup
-        }
-    };
-}
-
 
 export default {
-    /**
-     * The main fetch handler for the Worker.
-     * @param {Request} request - The incoming HTTP request.
-     * @param {object} env - The environment object containing bindings.
-     * @param {object} ctx - The execution context.
-     * @returns {Promise<Response>} The response to the client.
-     */
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
@@ -122,29 +79,52 @@ export default {
             return env.ASSETS.fetch(request);
         }
 
-        // --- ROUTE 2: API Proxy for the UI ---
-        if (url.pathname.startsWith('/api/')) {
-            const {isAuthenticated, user} = await getAdminUserFromJwt(request, env);
+        // --- ROUTE 2: Admin Login Endpoint ---
+        if (url.pathname === '/api/admin/login' && request.method === 'POST') {
+            try {
+                const {password} = await request.json();
+                if (password === env.WAFU_ADMIN_SECRET) {
+                    const payload = {
+                        sub: 'admin@wafu.com',
+                        role: 'administrator',
+                        iat: Math.floor(Date.now() / 1000),
+                        exp: Math.floor(Date.now() / 1000) + (60 * 60 * 8) // 8-hour session
+                    };
+                    const token = await createJwt(payload, env.JWT_SECRET);
+                    return new Response(JSON.stringify({token}), {headers: {'Content-Type': 'application/json'}});
+                }
+            } catch (e) {
+                // Catches JSON parsing errors
+            }
+            return new Response(JSON.stringify({error: 'Invalid credentials'}), {
+                status: 401,
+                headers: {'Content-Type': 'application/json'}
+            });
+        }
 
-            if (!isAuthenticated) {
-                return new Response(JSON.stringify({error: 'Unauthorized'}), {
-                    status: 401,
-                    headers: {'Content-Type': 'application/json'}
-                });
+        // --- ROUTE 3: Authenticated API Proxy for the UI ---
+        if (url.pathname.startsWith('/api/')) {
+            const authHeader = request.headers.get('Authorization');
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return new Response(JSON.stringify({error: 'Unauthorized'}), {status: 401});
+            }
+            const token = authHeader.substring(7);
+            const payload = await verifyJwt(token, env.JWT_SECRET);
+
+            if (!payload) {
+                return new Response(JSON.stringify({error: 'Invalid or expired token'}), {status: 401});
             }
 
+            const user = {id: payload.sub, role: payload.role};
+
             if (request.method !== 'GET' && user.role !== 'administrator') {
-                return new Response(JSON.stringify({error: 'Forbidden: Viewers cannot perform this action.'}), {
-                    status: 403,
-                    headers: {'Content-Type': 'application/json'}
-                });
+                return new Response(JSON.stringify({error: 'Forbidden'}), {status: 403});
             }
 
             const apiRequest = new Request(request);
             apiRequest.headers.set('X-WAFu-User-ID', user.id);
 
             const globalDO = env.WAFU_GLOBAL_DO.get(env.WAFU_GLOBAL_DO.idFromName('singleton'));
-
             if (url.pathname.startsWith('/api/global/')) {
                 return globalDO.fetch(apiRequest);
             }
@@ -156,13 +136,10 @@ export default {
                 return routeDO.fetch(apiRequest);
             }
 
-            return new Response(JSON.stringify({error: 'API endpoint not found'}), {
-                status: 404,
-                headers: {'Content-Type': 'application/json'}
-            });
+            return new Response(JSON.stringify({error: 'API endpoint not found'}), {status: 404});
         }
 
-        // --- ROUTE 3: WAF Evaluation for All Other Traffic ---
+        // --- ROUTE 4: WAF Evaluation for All Other Traffic ---
         const wafRequestPayload = {
             url: request.url,
             method: request.method,
@@ -190,8 +167,7 @@ export default {
 
         if (routeDecision.action === 'ALLOW' || routeDecision.action === 'LOG') {
             if (route.origin_type === 'service' && env[route.origin_service_name]) {
-                const service = env[route.origin_service_name];
-                return service.fetch(request);
+                return env[route.origin_service_name].fetch(request);
             } else if (route.origin_type === 'url' && route.origin_url) {
                 return fetch(route.origin_url, request);
             } else {
