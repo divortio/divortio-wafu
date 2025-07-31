@@ -10,6 +10,12 @@ name = "wafu"
 main = "src/worker.js"
 compatibility_date = "2025-07-31"
 
+# --- Static Asset Serving ---
+# This replaces the deprecated `[[site]]` configuration. It tells Wrangler
+# to bundle the contents of the "./public" directory with the worker.
+assets = "public"
+
+
 # --- Environment Variables ---
 # These variables are accessible inside the Worker at `env.VARIABLE_NAME`
 [vars]
@@ -34,6 +40,11 @@ bindings = [
     { name = "WAFU_AUDIT_LOGS_DO", class_name = "AuditLogsDO" }
 ]
 
+[[migrations]]
+tag = "v1" # Should be unique for each entry
+new_classes = ["GlobalRulesDO", "RouteRulesDO", "OtpDO", "EventLogsDO", "AuditLogsDO"]
+
+
 # --- KV Namespace Bindings ---
 [[kv_namespaces]]
 binding = "WAFU_LOOKUP_TABLES"
@@ -52,6 +63,4 @@ service = "my-api-worker"
 [triggers]
 crons = ["*/15 * * * *"]
 
-# --- Static Asset Serving ---
-[[site]]
-bucket = "./public"
+

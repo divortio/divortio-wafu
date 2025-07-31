@@ -3,19 +3,27 @@
  * FILE: src/worker.js
  *
  * DESCRIPTION:
- * The main entry point and orchestrator for the distributed WAFu system.
- * This version includes a secure, JWT-based authentication system for the
- * admin API, with a dedicated login endpoint for administrators.
+ * The main entry point for the WAFu system. This version has been updated
+ * to use the modern Workers Static Assets feature instead of the deprecated
+ * `[[site]]` configuration for serving the admin UI.
  * =============================================================================
  */
 
+// --- Static Asset Imports ---
+// This special import brings in the static asset handler and a manifest
+// of all the files in the `public` directory.
+import {handle} from 'workbox-precaching';
+import {manifest, version} from '__STATIC_CONTENT_MANIFEST';
+
+// --- Durable Object Class Imports ---
 import {GlobalRulesDO} from './global-rules-do.js';
 import {RouteRulesDO} from './route-rules-do.js';
 import {OtpDO} from './otp-do.js';
 import {EventLogsDO} from './event-logs-do.js';
 import {AuditLogsDO} from './audit-logs-do.js';
 
-// --- Self-Contained JWT Functions ---
+
+// --- JWT and Auth Functions ---
 
 /**
  * Creates a JWT.
@@ -69,14 +77,53 @@ async function verifyJwt(token, secret) {
     }
 }
 
+/**
+ * Authenticates a request by validating its JWT.
+ * @param {Request} request - The incoming HTTP request.
+ * @param {object} env - The environment object containing bindings.
+ * @returns {Promise<{isAuthenticated: boolean, user: object|null}>}
+ */
+async function getAdminUserFromJwt(request, env) {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return {isAuthenticated: false, user: null};
+    }
+
+    const token = authHeader.substring(7);
+    const payload = await verifyJwt(token, env.JWT_SECRET);
+
+    if (!payload) {
+        return {isAuthenticated: false, user: null};
+    }
+
+    return {
+        isAuthenticated: true,
+        user: {
+            id: payload.sub,
+            role: payload.role || 'viewer' // Default to viewer if role is not in token
+        }
+    };
+}
+
 
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
-        // --- ROUTE 1: User-Facing Admin UI ---
+        // --- ROUTE 1: User-Facing Admin UI (Updated Logic) ---
+        // Serve static assets from the `public` directory for the admin path.
         if (url.pathname.startsWith('/wafu-admin')) {
-            return env.ASSETS.fetch(request);
+            try {
+                // The new, modern way to serve static assets.
+                // It checks the manifest for the requested file and serves it.
+                return await handle(new Request(url.toString(), request), {
+                    manifest,
+                    version,
+                });
+            } catch (e) {
+                // If the asset is not found, let the request fall through
+                // to the WAF evaluation, in case it's a dynamic route.
+            }
         }
 
         // --- ROUTE 2: Admin Login Endpoint ---
@@ -104,21 +151,20 @@ export default {
 
         // --- ROUTE 3: Authenticated API Proxy for the UI ---
         if (url.pathname.startsWith('/api/')) {
-            const authHeader = request.headers.get('Authorization');
-            if (!authHeader || !authHeader.startsWith('Bearer ')) {
-                return new Response(JSON.stringify({error: 'Unauthorized'}), {status: 401});
-            }
-            const token = authHeader.substring(7);
-            const payload = await verifyJwt(token, env.JWT_SECRET);
+            const {isAuthenticated, user} = await getAdminUserFromJwt(request, env);
 
-            if (!payload) {
-                return new Response(JSON.stringify({error: 'Invalid or expired token'}), {status: 401});
+            if (!isAuthenticated) {
+                return new Response(JSON.stringify({error: 'Unauthorized'}), {
+                    status: 401,
+                    headers: {'Content-Type': 'application/json'}
+                });
             }
-
-            const user = {id: payload.sub, role: payload.role};
 
             if (request.method !== 'GET' && user.role !== 'administrator') {
-                return new Response(JSON.stringify({error: 'Forbidden'}), {status: 403});
+                return new Response(JSON.stringify({error: 'Forbidden: Viewers cannot perform this action.'}), {
+                    status: 403,
+                    headers: {'Content-Type': 'application/json'}
+                });
             }
 
             const apiRequest = new Request(request);
