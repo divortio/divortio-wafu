@@ -32,7 +32,7 @@ JWT_SECRET = "your-strong-jwt-signing-secret"
 
 [[migrations]]
 tag = "v1" # Should be unique for each entry
-new_classes = ["GlobalRulesDO", "RouteRulesDO", "OtpDO", "EventLogsDO", "AuditLogsDO"]
+new_sqlite_classes = ["GlobalRulesDO", "RouteRulesDO", "OtpDO", "EventLogsDO", "AuditLogsDO"]
 
 # --- Durable Object Bindings ---
 # The bindings now need to be defined individually.
