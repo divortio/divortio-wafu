@@ -3,9 +3,8 @@
  * FILE: src/otp-do.js
  *
  * DESCRIPTION:
- * Defines the `OtpDO` class. This version has been updated to use the dedicated
- * JWT_SECRET for signing session tokens, aligning it with the new, more
- * secure authentication architecture.
+ * Defines the `OtpDO` class. This version has been corrected to use the
+ * proper `this.state.storage.sql.exec()` API for all database operations.
  * =============================================================================
  */
 
@@ -44,57 +43,49 @@ async function createJwt(payload, secret) {
 
 
 export class OtpDO {
-    /**
-     * The constructor for the Durable Object.
-     * @param {DurableObjectState} state - The state object providing access to storage.
-     * @param {object} env - The environment object containing bindings.
-     */
     constructor(state, env) {
         this.state = state;
         this.env = env;
     }
 
-    /**
-     * Handles all incoming fetch events for this specific OTP instance.
-     * @param {Request} request - The incoming HTTP request.
-     */
     async fetch(request) {
         const url = new URL(request.url);
 
         if (url.pathname === '/initialize' && request.method === 'POST') {
-            const hasBeenInitialized = await this.state.storage.get("initialized");
-            if (hasBeenInitialized) {
+            const {results} = await this.state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='otp_state'");
+            if (results.length > 0) {
                 return new Response('OTP already initialized.', {status: 409});
             }
             return this.initialize(request);
         }
 
         if (url.pathname === '/status' && request.method === 'GET') {
-            const stmt = this.state.storage.sql.prepare("SELECT * FROM otp_state LIMIT 1");
-            const result = await stmt.first();
-            if (!result) {
+            const {results} = await this.state.storage.sql.exec("SELECT * FROM otp_state LIMIT 1");
+            if (!results || results.length === 0) {
                 return new Response(JSON.stringify({error: "OTP not found or not initialized."}), {
                     status: 404,
                     headers: {'Content-Type': 'application/json'}
                 });
             }
-            return new Response(JSON.stringify(result), {headers: {'Content-Type': 'application/json'}});
+            return new Response(JSON.stringify(results[0]), {headers: {'Content-Type': 'application/json'}});
         }
 
         if (url.pathname === '/activate' && request.method === 'POST') {
+            // Activating an OTP is a read-modify-write operation, which is a perfect
+            // use case for a transaction to ensure atomicity.
             let result;
-            await this.state.storage.transaction(async ctx => {
+            await this.state.storage.transaction(async (txn) => {
+                const {results} = await txn.exec("SELECT * FROM otp_state LIMIT 1");
+                const current = results[0];
                 const now = Date.now();
-                const current = await ctx.sql.prepare("SELECT * FROM otp_state LIMIT 1").first();
 
                 if (!current || current.activated_at || now > current.expires_at) {
                     result = {success: false, error: "Invalid, expired, or already used token."};
-                    return;
+                    return; // This will implicitly roll back the transaction
                 }
 
-                await ctx.sql.prepare("UPDATE otp_state SET activated_at = ?").bind(now).run();
+                await txn.exec("UPDATE otp_state SET activated_at = ?", [now]);
 
-                // Generate a real JWT for the user session using the dedicated JWT_SECRET.
                 const accessTokenPayload = {
                     sub: current.user_id,
                     gate: current.gate_id,
@@ -102,14 +93,13 @@ export class OtpDO {
                     iat: Math.floor(now / 1000),
                     exp: Math.floor(now / 1000) + (60 * 15) // 15-minute expiration
                 };
-
                 const accessToken = await createJwt(accessTokenPayload, this.env.JWT_SECRET);
 
                 result = {
                     success: true,
                     message: "Session created successfully.",
                     accessToken: accessToken,
-                    refreshToken: "placeholder-refresh-token" // Placeholder for a full refresh token implementation
+                    refreshToken: "placeholder-refresh-token"
                 };
             });
             return new Response(JSON.stringify(result), {headers: {'Content-Type': 'application/json'}});
@@ -118,50 +108,40 @@ export class OtpDO {
         return new Response('Not Found in OtpDO', {status: 404});
     }
 
-    /**
-     * Initializes the OTP's state and database schema.
-     * @param {Request} request - The initialization request containing OTP details.
-     */
     async initialize(request) {
         try {
             const {token, userId, gateId, context, expiresAt} = await request.json();
 
-            await this.state.storage.sql.run(
-                `CREATE TABLE otp_state
-                         (
-                             token        TEXT
-                                 PRIMARY KEY,
-                             user_id      TEXT    NOT NULL,
-                             gate_id      TEXT    NOT NULL,
-                             context      TEXT    NOT NULL,
-                             created_at   INTEGER NOT NULL,
-                             expires_at   INTEGER NOT NULL,
-                             activated_at INTEGER
-                         )`
+            await this.state.storage.sql.exec(`
+                CREATE TABLE otp_state
+                    (
+                        token                    TEXT
+                            PRIMARY KEY,
+                        user_id                  TEXT    NOT NULL,
+                        gate_id                  TEXT    NOT NULL,
+                        context                  TEXT    NOT NULL,
+                        created_at               INTEGER NOT NULL,
+                        expires_at               INTEGER NOT NULL,
+                        activated_at             INTEGER
+                    )
+            `);
+
+            await this.state.storage.sql.exec(
+                "INSERT INTO otp_state (token, user_id, gate_id, context, created_at, expires_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                [token, userId, gateId, context, Date.now(), expiresAt]
             );
 
-            const stmt = this.state.storage.sql.prepare(
-                `INSERT INTO
-                         otp_state (token, user_id, gate_id, context, created_at, expires_at, activated_at)
-                         VALUES
-                             (?, ?, ?, ?, ?, ?, NULL)`
-            );
-            await stmt.bind(token, userId, gateId, context, Date.now(), expiresAt).run();
-
-            await this.state.storage.put("initialized", true);
             await this.state.storage.setAlarm(expiresAt + (60 * 1000)); // 1 minute after expiration
 
             return new Response("OTP Initialized successfully.");
         } catch (e) {
             console.error("OTP Initialization Error:", e);
+            // If initialization fails, it's crucial to clean up to allow a retry.
             await this.state.storage.deleteAll();
             return new Response("Failed to initialize OTP.", {status: 500});
         }
     }
 
-    /**
-     * The alarm handler to clean up this DO's storage after it expires.
-     */
     async alarm() {
         console.log(`OTP DO (${this.state.id}): Alarm triggered. Deleting all storage.`);
         await this.state.storage.deleteAll();

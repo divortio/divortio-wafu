@@ -3,10 +3,8 @@
  * FILE: src/audit-logs-do.js
  *
  * DESCRIPTION:
- * Defines the `AuditLogsDO` class. This is a singleton Durable Object that
- * provides an immutable, append-only logging service for all configuration
- * changes made across the WAFu platform. It ensures a complete and reliable
- * audit trail for security and compliance purposes.
+ * Defines the `AuditLogsDO` class. This version has been corrected to use
+ * the proper `this.state.storage.sql.exec()` API for all database operations.
  * =============================================================================
  */
 
@@ -19,8 +17,6 @@ export class AuditLogsDO {
     constructor(state, env) {
         this.state = state;
         this.env = env;
-        // Run initialization once. `blockConcurrencyWhile()` ensures this
-        // constructor logic runs to completion before any other events are delivered.
         this.state.blockConcurrencyWhile(async () => {
             await this.initializeDatabase();
         });
@@ -28,36 +24,32 @@ export class AuditLogsDO {
 
     /**
      * Creates the SQLite table for audit logs if it doesn't already exist.
-     * This is executed only on the very first instantiation of this singleton DO.
      */
     async initializeDatabase() {
-        const db = this.state.storage.sql;
-        await db.prepare(`
+        await this.state.storage.sql.exec(`
             CREATE TABLE IF NOT EXISTS audit_logs
                 (
-                    id TEXT
+                    id                         TEXT
                         PRIMARY KEY,
-                    timestamp INTEGER NOT NULL,
-                    user_id TEXT      NOT NULL,
-                    context TEXT      NOT NULL, -- e.g., 'global', 'route-1'
-                    action TEXT       NOT NULL, -- e.g., 'CREATE_RULE', 'UPDATE_ROUTE', 'DELETE_USER'
-                    target_id TEXT    NOT NULL, -- The ID of the object that was changed
-                    data_before TEXT,           -- JSON string of the object before the change
-                    data_after TEXT             -- JSON string of the object after the change
+                    timestamp                  INTEGER NOT NULL,
+                    user_id                    TEXT    NOT NULL,
+                    context                    TEXT    NOT NULL, -- e.g., 'global', 'route-1'
+                    action                     TEXT    NOT NULL, -- e.g., 'CREATE_RULE', 'UPDATE_ROUTE', 'DELETE_USER'
+                    target_id                  TEXT    NOT NULL, -- The ID of the object that was changed
+                    data_before                TEXT,             -- JSON string of the object before the change
+                    data_after                 TEXT              -- JSON string of the object after the change
                 )
-        `).run();
+        `);
     }
 
     /**
      * Handles all incoming fetch events for the Durable Object.
-     * This acts as the object's internal router for API calls.
-     * @param {Request} request - The incoming HTTP request.
      */
     async fetch(request) {
         const url = new URL(request.url);
+        const sql = this.state.storage.sql;
 
         // --- API Endpoint for UI to Query Logs ---
-        // Example: GET /api/global/audit-logs?page=1&limit=50&user=admin@wafu.com
         if (url.pathname.startsWith('/api/global/audit-logs') && request.method === 'GET') {
             try {
                 const params = url.searchParams;
@@ -69,35 +61,36 @@ export class AuditLogsDO {
                 let bindings = [];
 
                 if (params.get('userId')) {
-                    whereClauses.push("user_id = ?");
+                    whereClauses.push("user_id = ?1");
                     bindings.push(params.get('userId'));
                 }
                 if (params.get('context')) {
-                    whereClauses.push("context = ?");
+                    whereClauses.push("context = ?2");
                     bindings.push(params.get('context'));
                 }
                 if (params.get('action')) {
-                    whereClauses.push("action = ?");
+                    whereClauses.push("action = ?3");
                     bindings.push(params.get('action'));
                 }
 
                 const whereString = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-                const query = `SELECT * FROM audit_logs ${whereString} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
-                bindings.push(limit, offset);
+                const dataQuery = `SELECT * FROM audit_logs ${whereString} ORDER BY timestamp DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
+                const dataBindings = [...bindings, limit, offset];
 
                 const countQuery = `SELECT COUNT(*) AS total FROM audit_logs ${whereString}`;
-                const countBindings = bindings.slice(0, -2); // Remove limit and offset for count
+                const countBindings = [...bindings];
 
-                const db = this.state.storage.sql;
-                const [data, total] = await db.batch([
-                    db.prepare(query).bind(...bindings),
-                    db.prepare(countQuery).bind(...countBindings)
-                ]);
+                const dataPromise = sql.exec(dataQuery, dataBindings);
+                const totalPromise = sql.exec(countQuery, countBindings);
+
+                const [{results: logs}, {results: totalResult}] = await Promise.all([dataPromise, totalPromise]);
+
+                const total = totalResult.length > 0 ? totalResult[0].total : 0;
 
                 const responsePayload = {
-                    logs: data.results,
-                    totalPages: Math.ceil((total.results[0]?.total || 0) / limit),
+                    logs: logs,
+                    totalPages: Math.ceil(total / limit),
                     currentPage: page,
                 };
 
@@ -117,27 +110,23 @@ export class AuditLogsDO {
             try {
                 const logEntry = await request.json();
 
-                // Basic validation
                 if (!logEntry.userId || !logEntry.context || !logEntry.action || !logEntry.targetId) {
                     return new Response('Invalid audit log entry: Missing required fields.', {status: 400});
                 }
 
-                const stmt = this.state.storage.sql.prepare(
-                        `INSERT INTO
-                             audit_logs (id, timestamp, user_id, context, action, target_id, data_before, data_after)
-                             VALUES
-                                 (?, ?, ?, ?, ?, ?, ?, ?)`
+                await sql.exec(
+                    `INSERT INTO audit_logs (id, timestamp, user_id, context, action, target_id, data_before, data_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        crypto.randomUUID(),
+                        logEntry.timestamp || Date.now(),
+                        logEntry.userId,
+                        logEntry.context,
+                        logEntry.action,
+                        logEntry.targetId,
+                        JSON.stringify(logEntry.dataBefore || null),
+                        JSON.stringify(logEntry.dataAfter || null)
+                    ]
                 );
-                await stmt.bind(
-                    crypto.randomUUID(),
-                    logEntry.timestamp || Date.now(),
-                    logEntry.userId,
-                    logEntry.context,
-                    logEntry.action,
-                    logEntry.targetId,
-                    JSON.stringify(logEntry.dataBefore || null),
-                    JSON.stringify(logEntry.dataAfter || null)
-                ).run();
 
                 return new Response('Log recorded.');
             } catch (e) {

@@ -3,9 +3,8 @@
  * FILE: src/route-rules-do.js
  *
  * DESCRIPTION:
- * Defines the `RouteRulesDO` class. This version has been refactored to
- * support both traditional fetch-based API calls from the UI and a modern,
- * direct RPC call from the main worker for high-performance rule evaluation.
+ * Defines the `RouteRulesDO` class. This version has been corrected to use
+ * the proper `this.state.storage.sql.exec()` API for all database operations.
  * =============================================================================
  */
 
@@ -26,8 +25,8 @@ export class RouteRulesDO {
      * Creates the route-specific rules table if it doesn't already exist.
      */
     async initializeDatabase() {
-        const db = this.state.storage.sql;
-        await db.prepare(`
+        // Use the correct API: this.state.storage.sql.exec()
+        await this.state.storage.sql.exec(`
             CREATE TABLE IF NOT EXISTS route_rules
                 (
                     id                    TEXT
@@ -42,7 +41,7 @@ export class RouteRulesDO {
                     trigger_alert         INTEGER NOT NULL DEFAULT 0,
                     block_http_code       INTEGER          DEFAULT 403
                 )
-        `).run();
+        `);
     }
 
     /**
@@ -51,16 +50,12 @@ export class RouteRulesDO {
     async loadCache() {
         if (this.cache) return;
         console.log(`RouteRulesDO (${this.state.id}): Cache miss. Reloading from SQLite.`);
-        const {results} = await this.state.storage.sql.prepare("SELECT * FROM route_rules").all();
+        // Use the correct API: this.state.storage.sql.exec()
+        const {results} = await this.state.storage.sql.exec("SELECT * FROM route_rules");
         this.cache = results.map(r => ({...r, expression: JSON.parse(r.expression), tags: JSON.parse(r.tags)}));
     }
 
     // --- RPC Method for WAF Evaluation ---
-    /**
-     * Evaluates a request against this route's specific ruleset.
-     * @param {object} wafRequestPayload - The request data from the main worker.
-     * @returns {Promise<object>} A decision object.
-     */
     async evaluate(wafRequestPayload) {
         await this.loadCache();
         const requestData = getRequestData(wafRequestPayload);
@@ -88,7 +83,6 @@ export class RouteRulesDO {
      * Handles traditional fetch-based requests, primarily for the UI API.
      */
     async fetch(request) {
-        await this.loadCache();
         const url = new URL(request.url);
 
         if (request.method !== 'GET' && url.pathname.startsWith('/api/')) {
@@ -106,23 +100,40 @@ export class RouteRulesDO {
      * Handles CRUD operations for route-specific rules.
      */
     async handleRulesApi(request) {
-        const db = this.state.storage.sql;
+        const sql = this.state.storage.sql;
         const url = new URL(request.url);
         const ruleId = url.pathname.split('/').slice(-2, -1)[0];
 
         if (request.method === 'GET') {
+            await this.loadCache();
             return new Response(JSON.stringify(this.cache), {headers: {'Content-Type': 'application/json'}});
         }
 
         if (request.method === 'POST') {
             const rule = await request.json();
-            await db.prepare("INSERT INTO route_rules (id, name, description, enabled, action, expression, tags, priority, trigger_alert, block_http_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                .bind(rule.id, rule.name, rule.description, rule.enabled, rule.action, JSON.stringify(rule.expression), JSON.stringify(rule.tags), rule.priority, rule.trigger_alert, rule.block_http_code)
-                .run();
+            // Use the correct API: sql.exec() with bindings
+            await sql.exec(
+                "INSERT INTO route_rules (id, name, description, enabled, action, expression, tags, priority, trigger_alert, block_http_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [rule.id, rule.name, rule.description, rule.enabled, rule.action, JSON.stringify(rule.expression), JSON.stringify(rule.tags), rule.priority, rule.trigger_alert, rule.block_http_code]
+            );
             return new Response(JSON.stringify(rule), {status: 201});
         }
 
-        // ... PUT and DELETE handlers remain the same ...
+        if (request.method === 'PUT' && ruleId) {
+            const rule = await request.json();
+            // Use the correct API: sql.exec() with bindings
+            await sql.exec(
+                "UPDATE route_rules SET name=?, description=?, enabled=?, action=?, expression=?, tags=?, priority=?, trigger_alert=?, block_http_code=? WHERE id=?",
+                [rule.name, rule.description, rule.enabled, rule.action, JSON.stringify(rule.expression), JSON.stringify(rule.tags), rule.priority, rule.trigger_alert, rule.block_http_code, ruleId]
+            );
+            return new Response(JSON.stringify(rule));
+        }
+
+        if (request.method === 'DELETE' && ruleId) {
+            // Use the correct API: sql.exec() with bindings
+            await sql.exec("DELETE FROM route_rules WHERE id = ?", [ruleId]);
+            return new Response('Rule deleted');
+        }
 
         return new Response('Invalid request for route rules API', {status: 400});
     }
