@@ -4,16 +4,9 @@
  *
  * DESCRIPTION:
  * The main entry point for the WAFu system. This version has been updated
- * to use the modern Workers Static Assets feature instead of the deprecated
- * `[[site]]` configuration for serving the admin UI.
+ * to use the modern Workers Static Assets feature by calling env.ASSETS.fetch().
  * =============================================================================
  */
-
-// --- Static Asset Imports ---
-// This special import brings in the static asset handler and a manifest
-// of all the files in the `public` directory.
-import {handle} from 'workbox-precaching';
-import {manifest, version} from '__STATIC_CONTENT_MANIFEST';
 
 // --- Durable Object Class Imports ---
 import {GlobalRulesDO} from './global-rules-do.js';
@@ -113,17 +106,9 @@ export default {
         // --- ROUTE 1: User-Facing Admin UI (Updated Logic) ---
         // Serve static assets from the `public` directory for the admin path.
         if (url.pathname.startsWith('/wafu-admin')) {
-            try {
-                // The new, modern way to serve static assets.
-                // It checks the manifest for the requested file and serves it.
-                return await handle(new Request(url.toString(), request), {
-                    manifest,
-                    version,
-                });
-            } catch (e) {
-                // If the asset is not found, let the request fall through
-                // to the WAF evaluation, in case it's a dynamic route.
-            }
+            // The `assets` configuration in wrangler.toml creates the `env.ASSETS` binding.
+            // This is the modern, correct way to serve static assets.
+            return env.ASSETS.fetch(request);
         }
 
         // --- ROUTE 2: Admin Login Endpoint ---
