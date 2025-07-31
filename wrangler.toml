@@ -15,6 +15,9 @@ compatibility_date = "2025-07-31"
 # to bundle the contents of the "./public" directory with the worker.
 assets = "public"
 
+# --- Compatibility Flags ---
+# This flag is required to enable the SQLite backend for Durable Objects.
+compatibility_flags = ["durable_object_sqlite"]
 
 # --- Environment Variables ---
 # These variables are accessible inside the Worker at `env.VARIABLE_NAME`
