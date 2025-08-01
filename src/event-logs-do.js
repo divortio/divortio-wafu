@@ -28,27 +28,25 @@ export class EventLogsDO extends DurableObject {
         await sql.exec(`
             CREATE TABLE IF NOT EXISTS events
                 (
-                    id         TEXT
+                    id                         TEXT
                         PRIMARY KEY,
-                    timestamp  INTEGER NOT NULL,
-                    action     TEXT    NOT NULL,
-                    rule_id    TEXT,
-                    context    TEXT    NOT NULL,
-                    route_host TEXT,
-                    ip_address TEXT,
-                    user_agent TEXT,
-                    country    TEXT,
-                    asn        INTEGER,
-                    colo       TEXT,
-                    cf_blob    TEXT,
-                    headers    TEXT
+                    timestamp                  INTEGER NOT NULL,
+                    action                     TEXT    NOT NULL,
+                    rule_id                    TEXT,
+                    context                    TEXT    NOT NULL,
+                    route_host                 TEXT,
+                    ip_address                 TEXT,
+                    user_agent                 TEXT,
+                    country                    TEXT,
+                    asn                        INTEGER,
+                    colo                       TEXT,
+                    cf_blob                    TEXT,
+                    headers                    TEXT
                 );
             CREATE TABLE IF NOT EXISTS analytics_summary_24h
                 (
-                    id           INTEGER
-                        PRIMARY KEY,
-                    last_updated INTEGER NOT NULL, 
-                    data TEXT NOT NULL
+                    id                            INTEGER
+                        PRIMARY KEY, last_updated INTEGER NOT NULL, data TEXT NOT NULL
                 );
         `);
     }
@@ -96,17 +94,16 @@ export class EventLogsDO extends DurableObject {
                      events (id,
                              timestamp,
                              action,
-                             rule_id, 
-                             context, 
+                             rule_id,
+                             context,
                              route_host,
-                             ip_address, 
+                             ip_address,
                              user_agent,
-                             country, 
+                             country,
                              asn,
                              colo,
                              cf_blob,
-                             headers
-                             )
+                             headers)
                      VALUES
                          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
@@ -157,7 +154,6 @@ export class EventLogsDO extends DurableObject {
                 console.log("EventLogsDO: Analytics aggregation failed. Queries: ", JSON.stringify(queries));
                 console.error("EventLogsDO: Analytics aggregation failed.", e);
             }
-
 
 
             const actions = results[0].results;
