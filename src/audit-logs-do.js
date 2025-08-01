@@ -3,40 +3,41 @@
  * FILE: src/audit-logs-do.js
  *
  * DESCRIPTION:
- * Defines the `AuditLogsDO` class. This version has been corrected to
- * extend the base `DurableObject` class, enabling RPC functionality.
+ * Defines the `AuditLogsDO` class. This version has been corrected to use
+ * the proper `?` placeholder for all SQL parameter bindings.
  * =============================================================================
  */
 
-import {DurableObject} from "cloudflare:workers";
-
-// The class now extends DurableObject
-export class AuditLogsDO extends DurableObject {
-    constructor(ctx, env) {
-        super(ctx, env); // Must call super()
-        this.ctx = ctx;
+export class AuditLogsDO {
+    /**
+     * The constructor for the Durable Object.
+     * @param {DurableObjectState} state - The state object providing access to storage.
+     * @param {object} env - The environment object containing bindings.
+     */
+    constructor(state, env) {
+        this.state = state;
         this.env = env;
-
-        this.ctx.waitUntil(this.initializeDatabase());
+        this.state.blockConcurrencyWhile(async () => {
+            await this.initializeDatabase();
+        });
     }
 
     /**
      * Creates the SQLite table for audit logs if it doesn't already exist.
      */
     async initializeDatabase() {
-        const sql = this.ctx.storage.sql;
-        await sql.exec(`
+        await this.state.storage.sql.exec(`
             CREATE TABLE IF NOT EXISTS audit_logs
                 (
                     id                         TEXT
                         PRIMARY KEY,
                     timestamp                  INTEGER NOT NULL,
                     user_id                    TEXT    NOT NULL,
-                    context                    TEXT    NOT NULL,
-                    action                     TEXT    NOT NULL,
-                    target_id                  TEXT    NOT NULL,
-                    data_before                TEXT,
-                    data_after                 TEXT
+                    context                    TEXT    NOT NULL, -- e.g., 'global', 'route-1'
+                    action                     TEXT    NOT NULL, -- e.g., 'CREATE_RULE', 'UPDATE_ROUTE', 'DELETE_USER'
+                    target_id                  TEXT    NOT NULL, -- The ID of the object that was changed
+                    data_before                TEXT,             -- JSON string of the object before the change
+                    data_after                 TEXT              -- JSON string of the object after the change
                 )
         `);
     }
@@ -46,9 +47,9 @@ export class AuditLogsDO extends DurableObject {
      */
     async fetch(request) {
         const url = new URL(request.url);
-        const sql = this.ctx.storage.sql;
+        const sql = this.state.storage.sql;
 
-        // API Endpoint for UI to Query Logs
+        // --- API Endpoint for UI to Query Logs ---
         if (url.pathname.startsWith('/api/global/audit-logs') && request.method === 'GET') {
             try {
                 const params = url.searchParams;
@@ -104,7 +105,7 @@ export class AuditLogsDO extends DurableObject {
             }
         }
 
-        // Internal Endpoint for Other DOs to Write a Log Entry
+        // --- Internal Endpoint for Other DOs to Write a Log Entry ---
         if (url.pathname === '/log' && request.method === 'POST') {
             try {
                 const logEntry = await request.json();

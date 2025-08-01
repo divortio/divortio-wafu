@@ -3,17 +3,17 @@
  * FILE: src/event-logs-do.js
  *
  * DESCRIPTION:
- * Defines the `EventLogsDO` class. This version has been corrected to
- * extend the base `DurableObject` class, enabling RPC functionality.
+ * Defines the `EventLogsDO` class. This version includes a more robust
+ * analytics aggregation function that gracefully handles cases where there
+ * is no data to aggregate, preventing runtime errors.
  * =============================================================================
  */
 
 import {DurableObject} from "cloudflare:workers";
 
-// The class now extends DurableObject
 export class EventLogsDO extends DurableObject {
     constructor(ctx, env) {
-        super(ctx, env); // Must call super()
+        super(ctx, env);
         this.ctx = ctx;
         this.env = env;
 
@@ -92,7 +92,11 @@ export class EventLogsDO extends DurableObject {
         if (url.pathname === '/log' && request.method === 'POST') {
             const logEntry = await request.json();
             await this.ctx.storage.sql.exec(
-                `INSERT INTO events (id, timestamp, action, rule_id, context, route_host, ip_address, user_agent, country, asn, colo, cf_blob, headers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                `INSERT INTO
+                     events (id, timestamp, action, rule_id, context, route_host, ip_address, user_agent, country, asn,
+                             colo, cf_blob, headers)
+                     VALUES
+                         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     crypto.randomUUID(),
                     logEntry.timestamp || Date.now(),
@@ -117,45 +121,52 @@ export class EventLogsDO extends DurableObject {
 
     /**
      * Runs aggregation queries against the raw `events` table.
+     * This version is more robust and handles cases with no data.
      */
     async runAggregation() {
         console.log("EventLogsDO: Starting analytics aggregation...");
-        const sql = this.ctx.storage.sql;
-        const since = Date.now() - (24 * 60 * 60 * 1000); // Last 24 hours
+        try {
+            const sql = this.ctx.storage.sql;
+            const since = Date.now() - (24 * 60 * 60 * 1000); // Last 24 hours
 
-        const actionsPromise = sql.exec("SELECT action, COUNT(*) AS count FROM events WHERE timestamp > ? GROUP BY action", [since]);
-        const totalPromise = sql.exec("SELECT COUNT(*) AS count FROM events WHERE timestamp > ?", [since]);
-        const blockedPromise = sql.exec("SELECT COUNT(*) AS count FROM events WHERE action = 'BLOCK' AND timestamp > ?", [since]);
-        const topCountriesPromise = sql.exec("SELECT country, COUNT(*) AS count FROM events WHERE action = 'BLOCK' AND country IS NOT NULL AND timestamp > ? GROUP BY country ORDER BY count DESC LIMIT 5", [since]);
-        const topAsnsPromise = sql.exec("SELECT asn, COUNT(*) AS count FROM events WHERE action = 'BLOCK' AND asn IS NOT NULL AND timestamp > ? GROUP BY asn ORDER BY count DESC LIMIT 5", [since]);
-        const topRulesPromise = sql.exec("SELECT rule_id, COUNT(*) AS count FROM events WHERE rule_id IS NOT NULL AND timestamp > ? GROUP BY rule_id ORDER BY count DESC LIMIT 5", [since]);
-        const timeseriesPromise = sql.exec("SELECT timestamp FROM events WHERE timestamp > ? ORDER BY timestamp ASC", [since]);
+            const queries = [
+                sql.exec("SELECT action, COUNT(*) AS count FROM events WHERE timestamp > ? GROUP BY action", [since]),
+                sql.exec("SELECT COUNT(*) AS count FROM events WHERE timestamp > ?", [since]),
+                sql.exec("SELECT COUNT(*) AS count FROM events WHERE action = 'BLOCK' AND timestamp > ?", [since]),
+                sql.exec("SELECT country, COUNT(*) AS count FROM events WHERE action = 'BLOCK' AND country IS NOT NULL AND timestamp > ? GROUP BY country ORDER BY count DESC LIMIT 5", [since]),
+                sql.exec("SELECT asn, COUNT(*) AS count FROM events WHERE action = 'BLOCK' AND asn IS NOT NULL AND timestamp > ? GROUP BY asn ORDER BY count DESC LIMIT 5", [since]),
+                sql.exec("SELECT rule_id, COUNT(*) AS count FROM events WHERE rule_id IS NOT NULL AND timestamp > ? GROUP BY rule_id ORDER BY count DESC LIMIT 5", [since]),
+                sql.exec("SELECT timestamp FROM events WHERE timestamp > ? ORDER BY timestamp ASC", [since])
+            ];
 
-        const [
-            {results: actions},
-            {results: total},
-            {results: blocked},
-            {results: topCountries},
-            {results: topAsns},
-            {results: topRules},
-            {results: timeseries}
-        ] = await Promise.all([actionsPromise, totalPromise, blockedPromise, topCountriesPromise, topAsnsPromise, topRulesPromise, timeseriesPromise]);
+            const results = await Promise.all(queries);
 
-        const summary = {
-            totalRequests: total[0]?.count || 0,
-            threatsBlocked: blocked[0]?.count || 0,
-            eventsByAction: actions,
-            topBlockedCountries: topCountries,
-            topBlockedAsns: topAsns,
-            topTriggeredRules: topRules,
-            eventsTimeseries: timeseries,
-        };
+            const actions = results[0].results;
+            const total = results[1].results;
+            const blocked = results[2].results;
+            const topCountries = results[3].results;
+            const topAsns = results[4].results;
+            const topRules = results[5].results;
+            const timeseries = results[6].results;
 
-        await sql.exec(
-            "INSERT OR REPLACE INTO analytics_summary_24h (id, last_updated, data) VALUES (1, ?, ?)",
-            [Date.now(), JSON.stringify(summary)]
-        );
+            const summary = {
+                totalRequests: (total && total.length > 0) ? total[0].count : 0,
+                threatsBlocked: (blocked && blocked.length > 0) ? blocked[0].count : 0,
+                eventsByAction: actions || [],
+                topBlockedCountries: topCountries || [],
+                topBlockedAsns: topAsns || [],
+                topTriggeredRules: topRules || [],
+                eventsTimeseries: timeseries || [],
+            };
 
-        console.log("EventLogsDO: Analytics aggregation complete.");
+            await sql.exec(
+                "INSERT OR REPLACE INTO analytics_summary_24h (id, last_updated, data) VALUES (1, ?, ?)",
+                [Date.now(), JSON.stringify(summary)]
+            );
+
+            console.log("EventLogsDO: Analytics aggregation complete.");
+        } catch (e) {
+            console.error("EventLogsDO: Analytics aggregation failed.", e);
+        }
     }
 }
