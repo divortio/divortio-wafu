@@ -93,8 +93,20 @@ export class EventLogsDO extends DurableObject {
             const logEntry = await request.json();
             await this.ctx.storage.sql.exec(
                 `INSERT INTO
-                     events (id, timestamp, action, rule_id, context, route_host, ip_address, user_agent, country, asn,
-                             colo, cf_blob, headers)
+                     events (id,
+                             timestamp,
+                             action,
+                             rule_id, 
+                             context, 
+                             route_host,
+                             ip_address, 
+                             user_agent,
+                             country, 
+                             asn,
+                             colo,
+                             cf_blob,
+                             headers
+                             )
                      VALUES
                          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
@@ -138,8 +150,15 @@ export class EventLogsDO extends DurableObject {
                 sql.exec("SELECT rule_id, COUNT(*) AS count FROM events WHERE rule_id IS NOT NULL AND timestamp > ? GROUP BY rule_id ORDER BY count DESC LIMIT 5", [since]),
                 sql.exec("SELECT timestamp FROM events WHERE timestamp > ? ORDER BY timestamp ASC", [since])
             ];
+            try {
+                const results = await Promise.all(queries);
+                console.log("EventLogsDO: Analytics aggregation queries complete.");
+            } catch (e) {
+                console.log("EventLogsDO: Analytics aggregation failed. Queries: ", JSON.stringify(queries));
+                console.error("EventLogsDO: Analytics aggregation failed.", e);
+            }
 
-            const results = await Promise.all(queries);
+
 
             const actions = results[0].results;
             const total = results[1].results;
