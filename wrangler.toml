@@ -13,7 +13,9 @@ compatibility_date = "2025-07-31"
 # --- Static Asset Serving ---
 # This replaces the deprecated `[[site]]` configuration. It tells Wrangler
 # to bundle the contents of the "./public" directory with the worker.
-assets = "public"
+[assets]
+directory = "./public"
+binding = "ASSETS"
 
 # --- Compatibility Flags ---
 # This flag is required to enable the SQLite backend for Durable Objects.

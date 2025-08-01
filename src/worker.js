@@ -10,11 +10,12 @@
  */
 
 // --- Durable Object Class Imports ---
-import {GlobalRulesDO} from './global-rules-do.js';
-import {RouteRulesDO} from './route-rules-do.js';
-import {OtpDO} from './otp-do.js';
-import {EventLogsDO} from './event-logs-do.js';
-import {AuditLogsDO} from './audit-logs-do.js';
+// In ES Module syntax, we also need to export these so Wrangler can find them.
+export {GlobalRulesDO} from './global-rules-do.js';
+export {RouteRulesDO} from './route-rules-do.js';
+export {OtpDO} from './otp-do.js';
+export {EventLogsDO} from './event-logs-do.js';
+export {AuditLogsDO} from './audit-logs-do.js';
 
 // --- JWT and Auth Functions ---
 async function createJwt(payload, secret) {
@@ -169,6 +170,3 @@ export default {
         ctx.waitUntil(eventLogsDO.fetch('https://wafu.internal/api/global/analytics/aggregate', {method: 'POST'}));
     },
 };
-
-// Export Durable Object classes so they can be used in wrangler.toml
-export {GlobalRulesDO, RouteRulesDO, OtpDO, EventLogsDO, AuditLogsDO};
